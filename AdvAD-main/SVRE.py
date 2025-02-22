@@ -113,11 +113,12 @@ def attack_main(model_name=None):
         attacked_models.model_selection("resnet50").eval(),  # 模型3
     ]
     # attacked_model_list = [attacked_models.model_selection(name).eval() for name in model_name_list]
-    # attacked_model = attacked_models.model_selection(model_name).eval()
+    attacked_model = attacked_models.model_selection(model_name).eval()
 
     def AMG_grad_func(x, x0_ori, t, y, eps, attack_type=None):
+        criterion = nn.CrossEntropyLoss()
         global prev_grad
-        momentum_factor = 1.0
+        momentum_factor = 0.3
         assert attack_type is not None
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
@@ -128,7 +129,15 @@ def attack_main(model_name=None):
             new_ts = new_ts.float() * (1000.0 / original_num_steps)
 
         with th.enable_grad():
-            xt = x.detach().clone().requires_grad_(True)
+            # xt = x.detach().clone().requires_grad_(True)
+            xt = x.clone().requires_grad_(True)
+            logits = attacked_model(xt)
+            loss = criterion(logits, y)
+            # 反向传播
+            loss.backward()
+            grad_x = xt.grad
+            # print("Gradient of xt:", grad_x)
+
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -138,8 +147,15 @@ def attack_main(model_name=None):
 
             pred_xstart = pred_xstart[:, :, :].sub(mean).div(std)
             pred_xstart = pred_xstart.permute(0, 3, 1, 2)
+            x_start = pred_xstart.clone().detach().requires_grad_(True)
+            logits = attacked_model(x_start)
+            loss = criterion(logits, y)
 
-            # logits = attacked_model(pred_xstart)
+            # 反向传播
+
+            loss.backward()
+            grad_x = x_start.grad  # grad_x 是 pred_xstart 对 x 的
+            # print("Gradient of x_start:", grad_x)
             # 遍历多个模型，计算梯度
             grads = []
             for model in attacked_models_list:
@@ -160,51 +176,48 @@ def attack_main(model_name=None):
                 grads.append(grad)
                 # 合并梯度 (例如取平均)
             final_grad = sum(grads) / len(grads)
-            # if attack_type == "target":
-            #     log_probs = F.log_softmax(logits, dim=-1)
-            #     log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-            #     grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-            # elif attack_type == "untarget":
-            #     probs = F.softmax(logits, dim=-1)
-            #     probs_selected = probs[range(len(logits)), y.view(-1)]
-            #     zero_nums = (probs_selected == 1) * 1e-6
-            #     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-            #     grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
-            # else:
-            #     assert False
-
             m_svrg = 10
             momentum = 1.0
-            criterion = nn.CrossEntropyLoss()
-            # grad_inner = th.zeros_like(xt, device=xt.device)
-            # x_m = pred_xstart.clone().requires_grad_(True)
-            x_m = pred_xstart
+            x_m = x_start.requires_grad_(True)  # 不要断开计算图
+            # print("Gradient of x_m:", x_m.grad)
             G_m = th.zeros_like(xt, device=xt.device)
+            # 迭代进行梯度更新
             for j in range(m_svrg):
-                # 随机选择一个模型的梯度
+
                 beta = 2./2550
+                # 使用同一模型来计算 x_m 的梯度
+                model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
+                model = attacked_models_list[model_index]
+                logits = model(x_m)  # 计算模型的 logits
 
-                grad_single = grads[th.randint(len(grads), (1,)).item()]
-                # 估计梯度
-                single = grad_single.clone()
-                # 确保反向传播计算 x_m 的梯度
-                # loss = criterion(x_m, y)  # 用合适的损失函数来计算梯度
-                # loss.backward()  # 计算梯度并更新 x_m.grad
-                g_m = x_m - (single - final_grad)
+                if attack_type == "target":
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m, retain_graph=True)[0]
+                elif attack_type == "untarget":
+                    probs = F.softmax(logits, dim=-1)
+                    probs_selected = probs[range(len(logits)), y.view(-1)]
+                    zero_nums = (probs_selected == 1) * 1e-6
+                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m, retain_graph=True)[0]
+                else:
+                    assert False
+
+                # 随机选择一个模型的梯度
+                grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+
+                # 计算梯度差异
+                g_m = grad_xj - (grad_single - final_grad)
+
+                # 使用 momentum 更新梯度
                 G_m1 = momentum * G_m + g_m
-                x_m = x_m + beta*th.sign(G_m1)
+                x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
+                x_j = th.clamp(x_j, 0.0, 1.0)
+                x_m = x_j
+                # 更新 G_m
+                G_m = G_m1  # 记得更新 G_m，用于下一次迭代
 
-            # if prev_grad is None:
-            #    #第一次计算时，直接将当前梯度作为动量梯度
-            #    momentum_grad = final_grad
-            # else:
-            #     momentum_grad = momentum_factor * prev_grad + G_m1
-            #     # momentum_grad =  0.001 * (1 - momentum_factor) * final_grad
-            # prev_grad = momentum_grad.detach().clone()
-            # prev_grad_l2_norm = th.norm(prev_grad)
-            # momentum_grad = final_grad
-
-            momentum_grad = momentum_factor * final_grad + G_m1
+            momentum_grad = momentum_factor * final_grad + (1-momentum_factor)*G_m
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
         return prev_grad
