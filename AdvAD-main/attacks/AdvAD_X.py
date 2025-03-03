@@ -180,14 +180,14 @@ class AdvAD_X:
             t,
             is_BP_iter_prev=None,
             budget_Xi=None,
-            mask_ori=None,
+            mask_ori1=None,
             x0_ori=None,
             eps_ori=None,
             eps_prev=None,
             xt_ori=None,
             attack_type=None,
             AMG_grad_func_DGI=None,
-
+            mask_ori=None,
             model_kwargs=None,
 
             classifier_scale=1.0,
@@ -201,16 +201,16 @@ class AdvAD_X:
         '''AMG with DGI'''
         if attack_type == "untarget":
             AMG_grad_untarget, choice = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
-            if mask_ori is not None:
-                eps = eps_ori - mask_ori * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+            if mask_ori1 is not None:
+                eps = eps_ori - mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
             else:
                 eps = eps_ori - classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
 
 
         elif attack_type == "target":
             AMG_grad_target, choice = AMG_grad_func_DGI(x, t_scale, y_tar, eps_prev, attack_type=attack_type)
-            if mask_ori is not None:
-                eps = eps_ori - mask_ori * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_target)
+            if mask_ori1 is not None:
+                eps = eps_ori - mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_target)
             else:
                 eps = eps_ori - classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_target)
 
@@ -251,7 +251,7 @@ class AdvAD_X:
         self,
         shape,
         budget_Xi=None,
-        mask_ori=None,
+        mask_ori1=None,
         x0_ori=None,
         xt_ori_list=None,
         eps_ori_list=None,
@@ -297,7 +297,7 @@ class AdvAD_X:
                     t,
                     is_BP_iter_prev=is_BP_iter,
                     budget_Xi=budget_Xi,
-                    mask_ori=mask_ori,
+                    mask_ori1=mask_ori1,
                     x0_ori=x0_ori,
                     eps_ori=eps_ori,
                     eps_prev=eps_prev,

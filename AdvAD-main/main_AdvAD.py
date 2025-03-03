@@ -160,19 +160,6 @@ def attack_main(model_name=None):
                 grads.append(grad)
                 # 合并梯度 (例如取平均)
             final_grad = sum(grads) / len(grads)
-            # if attack_type == "target":
-            #     log_probs = F.log_softmax(logits, dim=-1)
-            #     log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-            #     grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-            # elif attack_type == "untarget":
-            #     probs = F.softmax(logits, dim=-1)
-            #     probs_selected = probs[range(len(logits)), y.view(-1)]
-            #     zero_nums = (probs_selected == 1) * 1e-6
-            #     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-            #     grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
-            # else:
-            #     assert False
-
             m_svrg = 10
             momentum = 1.0
             criterion = nn.CrossEntropyLoss()
