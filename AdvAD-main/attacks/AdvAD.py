@@ -206,6 +206,7 @@ class AdvAD:
 
         elif attack_type == "untarget":
             AMG_grad_untarget = AMG_grad_func(x,x0_ori, t_scale, y_ori, eps_prev, attack_type=attack_type)
+
             eps = eps_ori - classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
 
         else:

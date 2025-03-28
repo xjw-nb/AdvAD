@@ -11,13 +11,25 @@ import numpy as np
 import datetime
 import time
 from tqdm import tqdm
-
+import random
 from pytorch_fid_score_new.fid_score_new import return_fid_from_data
 from utils import logger
 from PIL import Image
-
+import torch as th
 from natsort import index_natsorted
+def set_seed(seed=123):
+    """设置全局随机种子，确保结果可复现"""
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    th.cuda.manual_seed(seed)
+    th.cuda.manual_seed_all(seed)  # 多 GPU 时保持一致
 
+    th.backends.cudnn.benchmark = False
+    th.backends.cudnn.deterministic = True
+    # th.use_deterministic_algorithms(True)
+    print(f"Random seed set to: {seed}")
 ##load image metadata (Image_ID, true label, and target label)
 def load_ground_truth(csv_filename):
     image_id_list = []
@@ -44,7 +56,7 @@ def count_images_in_directory(directory):
     return file_count
 
 def eval_fid_from_npz(file_name=None, re_logger=True, quant=False):
-
+    set_seed(123)
     file_dir = 'attack_results/' + file_name
     # file_dir = 'visualization/' + file_name
     if re_logger:
@@ -65,8 +77,8 @@ def eval_fid_from_npz(file_name=None, re_logger=True, quant=False):
         all_adv_images = all_adv_images * 255.
         all_adv_images = np.clip(np.round(all_adv_images), 0, 255) / 255.
 
-    images_root = "./dataset1/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset1/images.csv')
+    images_root = "./dataset/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset/images.csv')
 
     image_size = all_adv_images.shape[2]
 
@@ -85,6 +97,7 @@ def eval_fid_from_npz(file_name=None, re_logger=True, quant=False):
     logger.log("******* Done *******")
 
 if __name__ == "__main__":
+    set_seed(123)
     dir_list = [
         # "your results directory in attack_results/xxxx"
 

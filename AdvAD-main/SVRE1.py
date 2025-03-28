@@ -145,12 +145,12 @@ def attack_main(model_name=None):
 
             pred_xstart = pred_xstart[:, :, :].sub(mean).div(std)
             pred_xstart = pred_xstart.permute(0, 3, 1, 2)
-            x_start = pred_xstart.clone().requires_grad_(True)
+            # x_start = pred_xstart.clone().requires_grad_(True)
             # x_start = pred_xstart
             # 遍历多个模型，计算梯度
             grads = []
             for model in attacked_models_list:
-                logits = model(x_start)  # 当前模型的 logits
+                logits = model(pred_xstart)  # 当前模型的 logits
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits, dim=-1)
                     log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
@@ -177,7 +177,7 @@ def attack_main(model_name=None):
             #         print(f"TensorBoard 记录计算图失败: {e}")
             m_svrg = 1
             momentum = 1.0
-            x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
+            x_m = pred_xstart.requires_grad_(True)  # 外层循环估计的x_0
             # print("Gradient of x_m:", x_m.grad)
             G_m = th.zeros_like(xt, device=xt.device)
             # 迭代进行梯度更新
@@ -200,32 +200,37 @@ def attack_main(model_name=None):
                     grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
                 else:
                     assert False
-                # 随机选择一个模型的梯度
-                grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+                # # 随机选择一个模型的梯度
+                # grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+                #
+                # # 计算梯度差异
+                # g_m = grad_xj - (grad_single - final_grad)
+                #
+                # # 使用 momentum 更新梯度
+                # G_m1 = momentum * G_m + g_m
+                # x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
+                # x_j = th.clamp(x_j, 0.0, 1.0)
+                # x_m = x_j
+                # # 更新 G_m
 
-                # 计算梯度差异
-                g_m = grad_xj - (grad_single - final_grad)
-
-                # 使用 momentum 更新梯度
-                G_m1 = momentum * G_m + g_m
-                x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
-                x_j = th.clamp(x_j, 0.0, 1.0)
-                x_m = x_j
-                # 更新 G_m
-                G_m = G_m1  # 记得更新 G_m，用于下一次迭代
+                # G_m = G_m1  # 记得更新 G_m，用于下一次迭代
+                # **使用 SVRG 更新梯度**
+                g_m = grad_xj - (grads[model_index] - final_grad)
+                G_m = 1.0 * G_m + g_m
+                x_m = (x_m + beta * th.sign(G_m)).clamp(0.0, 1.0)
 
             momentum_grad = momentum_factor * final_grad + (1-momentum_factor)*G_m
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
         return prev_grad
 
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset2/images.csv')
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
     all_adv_images = []
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset2", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
@@ -321,7 +326,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=5,
+        batch_size=1,
         budget_Xi=8,  # 0-255
         attack_method="AdvAD",
         attack_type="untarget",

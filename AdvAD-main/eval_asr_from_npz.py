@@ -72,8 +72,8 @@ def eval_asr_from_npz(file_name=None, re_logger=True, quant=False, eval_model=No
 
     image_num = all_adv_images.shape[0]
 
-    images_root = "./dataset1/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset1/images.csv')
+    images_root = "./dataset/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset/images.csv')
 
     all_ori_labels = []
     all_tar_labels = []

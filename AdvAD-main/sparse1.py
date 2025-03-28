@@ -124,8 +124,8 @@ def attack_main_advadx(model_name=None):
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
         global prev_grad
+        # global model_idx
         momentum_factor = 0.3
-
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
         original_num_steps = attack_diffusion.original_num_steps
@@ -163,24 +163,37 @@ def attack_main_advadx(model_name=None):
             if not choice.any():
                 return grad_zeros, choice
 
-            grads = []  # 画计算图
-            for model in attacked_models_list:  # 尝试每100次算一次梯度
-                logits = model(x_start)  # 当前模型的 logits
-                if attack_type == "target":
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-                elif attack_type == "untarget":
-                    probs = F.softmax(logits, dim=-1)
-                    probs_selected = probs[range(len(logits)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
-                else:
-                    assert False
-                grads.append(grad)
-                # 合并梯度 (例如取平均)
-            final_grad = sum(grads) / len(grads)
+            window_size = 3  # 滑动窗口大小
+            grad_sum = None  # 维护滑动窗口的梯度和
+            grads_queue = []  # 存储最近 window_size 轮的梯度
+            model_idx = 0  # 记录当前使用的模型索引
+            model = attacked_models_list[model_idx]  # 轮流选择模型
+            logits = model(x_start)  # 计算当前模型的 logits
+
+            if attack_type == "target":
+                log_probs = F.log_softmax(logits, dim=-1)
+                log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+            elif attack_type == "untarget":
+                probs = F.softmax(logits, dim=-1)
+                probs_selected = probs[range(len(logits)), y.view(-1)]
+                zero_nums = (probs_selected == 1) * 1e-6
+                log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
+            else:
+                assert False
+
+            # 维护滑动窗口
+            if len(grads_queue) < window_size:
+                grads_queue.append(grad)  # 直接加入队列
+                grad_sum = grad if grad_sum is None else grad_sum + grad  # 累加梯度
+                # avg_grad = grad  # 还没满 window_size，用当前梯度
+            else:
+                grad_sum = grad_sum - grads_queue.pop(0) + grad  # 移除最旧梯度，加入最新梯度
+                avg_grad = grad_sum / window_size  # 计算滑动窗口平均梯度
+                grads_queue.append(avg_grad)
+            model_idx = (model_idx + 1) % len(attacked_models_list)  # 轮流选择下一个模型
+            final_grad = sum(grads_queue) / len(grads_queue)
             m_svrg = 1  # 改为3
             momentum = 1.0
             x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
@@ -189,8 +202,8 @@ def attack_main_advadx(model_name=None):
             for j in range(m_svrg):
                 beta = 2. / 2550
                 # 使用同一模型来计算 x_m 的梯度
-                model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
-                model = attacked_models_list[model_index]
+                # model_idx = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
+                model = attacked_models_list[model_idx-1]
                 logits = model(x_m)  # 计算模型的 logits
 
                 if attack_type == "target":
@@ -206,7 +219,7 @@ def attack_main_advadx(model_name=None):
                 else:
                     assert False
                 # 随机选择一个模型的梯度
-                grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+                grad_single = grads_queue[model_idx-1]  # 从梯度列表中选择与模型匹配的梯度
 
                 # 计算梯度差异
                 g_m = grad_xj - (grad_single - final_grad)
