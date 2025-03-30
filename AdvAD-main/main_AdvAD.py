@@ -146,12 +146,7 @@ def attack_main(model_name=None):
 
             else:
                 assert False
-            t1 = t.clone()
-            a_values = []
-            for i in range (t1):
-                # 计算 a_{t+1}
-                a_next = 1.0 / ((1 + grad) ** (2 / 3))
-                a_values.append(a_next)  # a_values[t-1] 对应 a_{t+1}
+
         return grad
 
     image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')

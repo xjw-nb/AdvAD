@@ -64,7 +64,8 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     return res.expand(broadcast_shape)
 
 prev_grad = None
-def attack_main_advadx(momentum_factor,model_name=None):
+x_list = []
+def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
 
@@ -125,8 +126,11 @@ def attack_main_advadx(momentum_factor,model_name=None):
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
         global prev_grad
+        global prev
+        global grad1
+        global x_list
+        ut = 1.0
         # momentum_factor = 0.2
-
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
         original_num_steps = attack_diffusion.original_num_steps
@@ -136,8 +140,12 @@ def attack_main_advadx(momentum_factor,model_name=None):
             new_ts = new_ts.float() * (1000.0 / original_num_steps)
 
         with th.enable_grad():
-            xt = x.detach().clone().requires_grad_(True)
 
+            # x_list = []
+            xt = x.detach().clone().requires_grad_(True)
+            x_list.append(xt)
+            if len(x_list) > 3:  # 限制存储的 x_list 长度
+                x_list.pop(0)
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)  # 基于xt估计x0
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -162,39 +170,75 @@ def attack_main_advadx(momentum_factor,model_name=None):
             grad_zeros = th.zeros_like(x)  # 创建一个全是0的张量
 
             if not choice.any():
-                return grad_zeros, choice
-
-            grads = []  # 画计算图
-            # 随机从 attacked_models_list 中选择一个模型
-            model = random.choice(attacked_models_list)  # 随机选择一个模型
-            logits = model(x_start)  # 当前模型的 logits
-            if attack_type == "target":
-                log_probs = F.log_softmax(logits, dim=-1)
-                log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-            elif attack_type == "untarget":
-                probs = F.softmax(logits, dim=-1)
-                probs_selected = probs[range(len(logits)), y.view(-1)]
-                zero_nums = (probs_selected == 1) * 1e-6
-                log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
-            else:
-                assert False
-            grads.append(grad)
+                return grad_zeros, choice,ut
             t1 = t.clone()
-            a_values = []
-            for i in range(t1):
-                # 计算 a_{t+1}
-                a_next = 1.0 / ((1 + grad) ** (2 / 3))
+            if t1[0].item() == 999:
+                # 随机从 attacked_models_list 中选择一个模型
+                model = random.choice(attacked_models_list)  # 随机选择一个模型
+                logits = model(x_start)  # 当前模型的 logits
+                if attack_type == "target":
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                    grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+                elif attack_type == "untarget":
+                    probs = F.softmax(logits, dim=-1)
+                    probs_selected = probs[range(len(logits)), y.view(-1)]
+                    zero_nums = (probs_selected == 1) * 1e-6
+                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    grad1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
+                else:
+                    assert False
+                d1=grad1.clone()
+
+            if t1[0].item() != 999:
+                grad_t = []
+                a_values = []
+                # grad_bo = []
+                model1 = random.choice(attacked_models_list)
+                # selected_model = model1
+                logits = model1(x_start)  # 当前模型的 logits
+                if attack_type == "target":
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                    grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+                elif attack_type == "untarget":
+                    probs = F.softmax(logits, dim=-1)
+                    probs_selected = probs[range(len(logits)), y.view(-1)]
+                    zero_nums = (probs_selected == 1) * 1e-6
+                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    grad_t1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
+                else:
+                    assert False
+                grad_t.append(grad_t1)
+
+                a_next = 1.0 / ((1 + th.norm(grad1) ** 2 + sum(th.norm(g) ** 2 for g in grad_t)) ** (2 / 3))
                 a_values.append(a_next)  # a_values[t-1] 对应 a_{t+1}
-                # 合并梯度 (例如取平均)
-            final_grad = sum(grads) / len(grads)
+                ut = 1.0 / (((th.norm(grad1) ** 2 + sum(th.norm(g1) ** 2 for g1 in prev)) / a_next) ** (1 / 3))
+                logits1 = model1(x_list[-2])
+                if attack_type == "target":
+                    log_probs = F.log_softmax(logits1, dim=-1)
+                    log_probs_selected = log_probs[range(len(logits1)), y.view(-1)]
+                    grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+                elif attack_type == "untarget":
+                    probs = F.softmax(logits1, dim=-1)
+                    probs_selected = probs[range(len(logits1)), y.view(-1)]
+                    zero_nums = (probs_selected == 1) * 1e-6
+                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    grad_t2 = th.autograd.grad(log_one_minus_probs_selected.sum(), x_list[-2])[0]
+                else:
+                    assert False
+                # grad_bo.append(grad_t2)
 
-            momentum_grad = momentum_factor * final_grad + (1 - momentum_factor) * G_m
+                momentum_grad = grad_t1 + (1 - a_next) * (prev_grad - grad_t2)
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
-            prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
+            prev = []
+            if t1[0].item() == 999:
+               prev_grad = grad1.detach().clone()  # 创建当前梯度的副本
+            else:
+               prev_grad = momentum_grad.detach().clone()
+               prev.append(prev_grad)
 
-        return prev_grad, choice
+        return prev_grad, choice, ut
 
     images_root = "./dataset1/images/"  # The clean images' root directory.
     image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
@@ -294,7 +338,7 @@ def attack_main_advadx(momentum_factor,model_name=None):
                 mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
 
                 # 计算块大小
-                block_size = 8
+                block_size = 32
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
                 # 存储每个块的特征重要性
@@ -321,7 +365,7 @@ def attack_main_advadx(momentum_factor,model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 5)
+                    pixel_threshold = np.percentile(block, 1)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 

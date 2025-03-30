@@ -70,8 +70,8 @@ def eval_quality_from_npz(file_name=None, re_logger=True, quant=False):
     #     image_new = Image.open("temp_test.png")
     #     all_adv_images[i] = np.array(image_new, dtype=np.float32)
 
-    images_root = "./dataset/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset/images.csv')
+    images_root = "./dataset1/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('./dataset1/images.csv')
 
     image_num = all_adv_images.shape[0]
     image_size = all_adv_images.shape[2]
