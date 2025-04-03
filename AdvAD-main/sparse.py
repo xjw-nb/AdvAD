@@ -63,7 +63,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-prev_grad = None
+# prev_grad = None
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -123,7 +123,7 @@ def attack_main_advadx(model_name=None):
 
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
-        global prev_grad
+        # global prev_grad
         momentum_factor = 0.3
 
         timestep_map = attack_diffusion.timestep_map
@@ -136,7 +136,6 @@ def attack_main_advadx(model_name=None):
 
         with th.enable_grad():
             xt = x.detach().clone().requires_grad_(True)
-
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)  # 基于xt估计x0
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -162,8 +161,7 @@ def attack_main_advadx(model_name=None):
 
             if not choice.any():
                 return grad_zeros, choice
-
-            grads = []  # 画计算图
+            grads = []
             for model in attacked_models_list:  # 尝试每100次算一次梯度
                 logits = model(x_start)  # 当前模型的 logits
                 if attack_type == "target":
@@ -174,7 +172,7 @@ def attack_main_advadx(model_name=None):
                     probs = F.softmax(logits, dim=-1)
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
                     grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
@@ -183,7 +181,8 @@ def attack_main_advadx(model_name=None):
             final_grad = sum(grads) / len(grads)
             m_svrg = 1  # 改为3
             momentum = 1.0
-            x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
+            # x_t1 = xt.detach().clone().requires_grad_(True)
+            x_m = x_start.clone().requires_grad_(True)  # 外层循环估计的x_0
             G_m = th.zeros_like(xt, device=xt.device)
             # 迭代进行梯度更新
             for j in range(m_svrg):
@@ -192,25 +191,23 @@ def attack_main_advadx(model_name=None):
                 model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
                 model = attacked_models_list[model_index]
                 logits = model(x_m)  # 计算模型的 logits
-
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits, dim=-1)
                     log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m, retain_graph=True)[0]
+                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m)[0]
                 elif attack_type == "untarget":
                     probs = F.softmax(logits, dim=-1)
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                    log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
                     grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
                 else:
                     assert False
                 # 随机选择一个模型的梯度
                 grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
-
                 # 计算梯度差异
                 g_m = grad_xj - (grad_single - final_grad)
-
+                # print("1111",grad_single-grad_xj)
                 # 使用 momentum 更新梯度
                 G_m1 = momentum * G_m + g_m
                 x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
@@ -225,8 +222,8 @@ def attack_main_advadx(model_name=None):
 
         return prev_grad, choice
 
-    images_root = "./dataset/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
+    images_root = "./dataset1/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
 
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
@@ -270,13 +267,16 @@ def attack_main_advadx(model_name=None):
     all_BP_iter_count = 0
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
+        grads = []
+        prev_grad = None
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
+        prev_grad = th.zeros_like(x0_ori, device=x0_ori.device)
         label_ori_all = label_ori_all.to(device)
         label_tar_all = label_tar_all.to(device)
 
@@ -351,7 +351,7 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 5)
+                    pixel_threshold = np.percentile(block, 20)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 
@@ -449,7 +449,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=5,
+        batch_size=50,
         budget_Xi=8,  # 0-255, PC
         attack_method="AdvAD-X",
         attack_type="untarget",

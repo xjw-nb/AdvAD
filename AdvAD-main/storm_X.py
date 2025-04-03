@@ -186,7 +186,7 @@ class AdvAD_X:
             eps_prev=None,
             xt_ori=None,
             attack_type=None,
-            AMG_grad_func_DGI=None,
+            AMG_grad_func_DGI1=None,
             mask_ori=None,
             model_kwargs=None,
 
@@ -200,7 +200,7 @@ class AdvAD_X:
 
         '''AMG with DGI'''
         if attack_type == "untarget":
-            AMG_grad_untarget, choice, ut = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
+            AMG_grad_untarget, choice, ut = AMG_grad_func_DGI1(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
             if mask_ori1 is not None:
                 eps = eps_ori - ut * mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
                 # eps = eps - ut *
@@ -209,7 +209,7 @@ class AdvAD_X:
 
 
         elif attack_type == "target":
-            AMG_grad_target, choice = AMG_grad_func_DGI(x, t_scale, y_tar, eps_prev, attack_type=attack_type)
+            AMG_grad_target, choice = AMG_grad_func_DGI1(x, t_scale, y_tar, eps_prev, attack_type=attack_type)
             if mask_ori1 is not None:
                 eps = eps_ori - mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_target)
             else:
@@ -259,7 +259,7 @@ class AdvAD_X:
         noise=None,
         model_kwargs=None,
         attack_type=None,
-        AMG_grad_func_DGI=None,
+        AMG_grad_func_DGI1=None,
         device=None,
         diffusion_step=None,
     ):
@@ -304,7 +304,7 @@ class AdvAD_X:
                     eps_prev=eps_prev,
                     xt_ori=xt_ori,
                     attack_type=attack_type,
-                    AMG_grad_func_DGI=AMG_grad_func_DGI,
+                    AMG_grad_func_DGI1=AMG_grad_func_DGI1,
                     model_kwargs=model_kwargs,
                 )
 

@@ -63,7 +63,6 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-prev_grad = None
 x_list = []
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
@@ -126,10 +125,9 @@ def attack_main_advadx(model_name=None):
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
         global prev_grad
-        global prev
-        global grad1
         global x_list
         ut = 1.0
+        grad1 = th.zeros_like(x0_ori, device=x0_ori.device)
         # momentum_factor = 0.2
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
@@ -141,11 +139,11 @@ def attack_main_advadx(model_name=None):
 
         with th.enable_grad():
 
-            # x_list = []
             xt = x.detach().clone().requires_grad_(True)
             x_list.append(xt)
-            if len(x_list) > 3:  # 限制存储的 x_list 长度
-                x_list.pop(0)
+            if len(x_list) > 3:
+               x_list = x_list[-3:]  # 只删除最旧的元素，保证最多存 3 个
+            print("1111",len(x_list))
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)  # 基于xt估计x0
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -165,6 +163,9 @@ def attack_main_advadx(model_name=None):
             pred_xstart = pred_xstart[:, :, :].sub(mean).div(std)
             pred_xstart = pred_xstart.permute(0, 3, 1, 2)
             x_start = pred_xstart.clone().requires_grad_(True) #detacth
+            # x_list.append(x_start)
+            # if len(x_list) > 3:  # 限制存储的 x_list 长度
+            #     x_list.pop(0)
             logits = attacked_model(pred_xstart)  # 计算估计的x0的logits
             choice = th.argmax(logits, 1).detach() == y  # 寻找logits最大的索引对应的类别，再与原标签进行比较获得布尔张量choice
             grad_zeros = th.zeros_like(x)  # 创建一个全是0的张量
@@ -185,13 +186,13 @@ def attack_main_advadx(model_name=None):
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
                     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
+                    grad1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
                 d1=grad1.clone()
 
             if t1[0].item() != 999:
-                grad_t = []
+                # grad_t = []
                 a_values = []
                 # grad_bo = []
                 model1 = random.choice(attacked_models_list)
@@ -206,15 +207,20 @@ def attack_main_advadx(model_name=None):
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
                     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_t1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
+                    grad_t1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
-                grad_t.append(grad_t1)
+                # grad_t.append(grad_t1)
+                # print("111",len(grad_t))
 
-                a_next = 1.0 / ((1 + th.norm(grad1) ** 2 + sum(th.norm(g) ** 2 for g in grad_t)) ** (2 / 3))
-                a_values.append(a_next)  # a_values[t-1] 对应 a_{t+1}
-                ut = 1.0 / (((th.norm(grad1) ** 2 + sum(th.norm(g1) ** 2 for g1 in prev)) / a_next) ** (1 / 3))
-                logits1 = model1(x_list[-2])
+
+                a_next = 1.0 / (((1 + th.norm(grad1) ** 2 + th.norm(grad_t1) ** 2 )) ** (2 / 3))
+                # a_values.append(a_next)  # a_values[t-1] 对应 a_{t+1}
+                # ut = 1.0 / (((th.norm(grad1) ** 2 + sum(th.norm(g1) ** 2 for g1 in prev)) / a_next) ** (1 / 3))
+                ut = 1.0 / (((th.norm(grad1) ** 2)  / a_next) + sum(th.norm(g1) ** 2 / a_next for g1 in prev) ** (1 / 3))
+
+
+                logits1 = model1(x_start)
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits1, dim=-1)
                     log_probs_selected = log_probs[range(len(logits1)), y.view(-1)]
@@ -224,14 +230,14 @@ def attack_main_advadx(model_name=None):
                     probs_selected = probs[range(len(logits1)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
                     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_t2 = th.autograd.grad(log_one_minus_probs_selected.sum(), x_list[-2])[0]
+                    grad_t2 = th.autograd.grad(log_one_minus_probs_selected.sum(), x_list[1], retain_graph=True)[0]
                 else:
                     assert False
                 # grad_bo.append(grad_t2)
 
                 momentum_grad = grad_t1 + (1 - a_next) * (prev_grad - grad_t2)
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
-            prev = []
+            # prev = []
             if t1[0].item() == 999:
                prev_grad = grad1.detach().clone()  # 创建当前梯度的副本
             else:
@@ -240,8 +246,8 @@ def attack_main_advadx(model_name=None):
 
         return prev_grad, choice, ut
 
-    images_root = "./dataset1/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
+    images_root = "./dataset/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
 
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
@@ -285,13 +291,17 @@ def attack_main_advadx(model_name=None):
     all_BP_iter_count = 0
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
+        x_list = []
+        prev = []
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
+        prev_grad = th.zeros_like(x0_ori, device=x0_ori.device)
+        grad1 = th.zeros_like(x0_ori, device=x0_ori.device)
         label_ori_all = label_ori_all.to(device)
         label_tar_all = label_tar_all.to(device)
 
@@ -338,7 +348,7 @@ def attack_main_advadx(model_name=None):
                 mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
 
                 # 计算块大小
-                block_size = 32
+                block_size = 4
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
                 # 存储每个块的特征重要性
@@ -353,7 +363,7 @@ def attack_main_advadx(model_name=None):
                         # block_importance[i, j] = np.sqrt(np.mean(np.square(block)))  # 均方根均值
 
                 # 计算前50%的块
-                threshold = np.percentile(block_importance, 50)
+                threshold = np.percentile(block_importance, 30)
                 important_blocks = np.where(block_importance >= threshold)
 
                 # 创建一个新掩码，初始化为零
@@ -365,7 +375,7 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 1)
+                    pixel_threshold = np.percentile(block, 5)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 
@@ -463,7 +473,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=50,
+        batch_size=5,
         budget_Xi=8,  # 0-255, PC
         attack_method="AdvAD-X",
         attack_type="untarget",

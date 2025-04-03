@@ -60,8 +60,8 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-prev_grad = None
-
+# prev_grad = None
+# grads = []
 def attack_main(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -121,9 +121,11 @@ def attack_main(model_name=None):
     attacked_model = attacked_models.model_selection(model_name).eval()
     # 初始化 TensorBoard 记录器
     # writer = SummaryWriter("logs/AMG_grad_func")
-    def AMG_grad_func(x, x0_ori, t, y, eps, attack_type=None):
 
-        global prev_grad
+    def AMG_grad_func(x, t, y, eps, attack_type=None):
+
+        # global prev_grad
+        # global grads
         momentum_factor = 0.3
         assert attack_type is not None
         timestep_map = attack_diffusion.timestep_map
@@ -148,7 +150,7 @@ def attack_main(model_name=None):
             x_start = pred_xstart.clone().requires_grad_(True)
             # x_start = pred_xstart
             # 遍历多个模型，计算梯度
-            grads = []
+            # grads = []
             for model in attacked_models_list:
                 logits = model(x_start)  # 当前模型的 logits
                 if attack_type == "target":
@@ -160,10 +162,11 @@ def attack_main(model_name=None):
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
                     log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt,retain_graph=True)[0]
+                    grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
                 grads.append(grad)
+                # print("111",len(grads))
                 # 合并梯度 (例如取平均)
             final_grad = sum(grads) / len(grads)
             # if writer is not None and len(attacked_models_list) > 0:
@@ -217,6 +220,7 @@ def attack_main(model_name=None):
             momentum_grad = momentum_factor * final_grad + (1-momentum_factor)*G_m
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
+            print("1111",prev_grad)
         return prev_grad
 
     image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
@@ -232,6 +236,7 @@ def attack_main(model_name=None):
 
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
         prev_grad = None
+        grads = []
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
         classes_ori = label_ori_all.to(device)
@@ -321,7 +326,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=5,
+        batch_size=1,
         budget_Xi=8,  # 0-255
         attack_method="AdvAD",
         attack_type="untarget",

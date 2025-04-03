@@ -211,7 +211,6 @@ def attack_main_advadx(momentum_factor,model_name=None):
 
                 # 计算梯度差异
                 g_m = grad_xj - (grad_single - final_grad)
-
                 # 使用 momentum 更新梯度
                 G_m1 = momentum * G_m + g_m
                 x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
@@ -455,7 +454,7 @@ def create_attack_argparser():
         attack_type="untarget",
         image_size=224,
 
-        model_name="inception_v3",
+        model_name="resnet50",
         eval_model="mobile_v2",
         momentum_factor="0.1",
         model_name_list=["vgg19", "inception_v3", "resnet50"],

@@ -200,13 +200,18 @@ class AdvAD_X:
         y_tar = model_kwargs["y_tar"]
 
         '''AMG with DGI'''
+        # if attack_type == "untarget":
+        #     AMG_grad_untarget, choice, ut = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
+        #     if mask_ori1 is not None:
+        #         eps = eps_ori - ut * mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+        #     else:
+        #         eps = eps_ori - ut * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
         if attack_type == "untarget":
-            AMG_grad_untarget, choice, ut = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
+            AMG_grad_untarget, choice = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
             if mask_ori1 is not None:
-                eps = eps_ori - ut * mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+                eps = eps_ori -  mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
             else:
-                eps = eps_ori - ut * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
-
+                eps = eps_ori -  classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
 
         elif attack_type == "target":
             AMG_grad_target, choice = AMG_grad_func_DGI(x, t_scale, y_tar, eps_prev, attack_type=attack_type)
