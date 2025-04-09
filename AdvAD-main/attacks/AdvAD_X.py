@@ -178,7 +178,7 @@ class AdvAD_X:
             self,
             x,
             t,
-            ut=1,
+            # ut=1,
             is_BP_iter_prev=None,
             budget_Xi=None,
             mask_ori1=None,
@@ -200,18 +200,18 @@ class AdvAD_X:
         y_tar = model_kwargs["y_tar"]
 
         '''AMG with DGI'''
-        # if attack_type == "untarget":
-        #     AMG_grad_untarget, choice, ut = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
-        #     if mask_ori1 is not None:
-        #         eps = eps_ori - ut * mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
-        #     else:
-        #         eps = eps_ori - ut * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
         if attack_type == "untarget":
-            AMG_grad_untarget, choice = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
+            AMG_grad_untarget, choice, ut = AMG_grad_func_DGI(x, t_scale, y_ori, eps_prev, attack_type=attack_type)
             if mask_ori1 is not None:
-                eps = eps_ori -  mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+                eps = eps_ori - ut * mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
             else:
-                eps = eps_ori -  classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+                eps = eps_ori - ut * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+        # if attack_type == "untarget":
+        #     AMG_grad_untarget, choice = AMG_grad_func_DGI(x, t_scale,y_ori, eps_prev, attack_type=attack_type)
+        #     if mask_ori1 is not None:
+        #         eps = eps_ori -  mask_ori1 * classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
+        #     else:
+        #         eps = eps_ori -  classifier_scale * (1 - alpha_bar).sqrt() * (AMG_grad_untarget)
 
         elif attack_type == "target":
             AMG_grad_target, choice = AMG_grad_func_DGI(x, t_scale, y_tar, eps_prev, attack_type=attack_type)
@@ -267,7 +267,7 @@ class AdvAD_X:
         AMG_grad_func_DGI=None,
         device=None,
         diffusion_step=None,
-        ut=1
+        # ut=1
     ):
 
         if device is None:
@@ -312,7 +312,7 @@ class AdvAD_X:
                     attack_type=attack_type,
                     AMG_grad_func_DGI=AMG_grad_func_DGI,
                     model_kwargs=model_kwargs,
-                    ut=1
+                    # ut=1
                 )
 
                 img = out["sample"]

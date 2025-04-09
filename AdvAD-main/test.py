@@ -124,7 +124,7 @@ def attack_main_advadx(model_name=None):
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
         # global prev_grad
-        momentum_factor = 0.5
+        momentum_factor = 0.45
 
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
@@ -184,6 +184,7 @@ def attack_main_advadx(model_name=None):
             # x_t1 = xt.detach().clone().requires_grad_(True)
 
             x_m = x_start.clone().requires_grad_(True)  # 外层循环估计的x_0
+            # xt_new = xt.detach().clone().requires_grad_(True)
             G_m = th.zeros_like(xt, device=xt.device)
             # 迭代进行梯度更新
             for j in range(m_svrg):
@@ -200,8 +201,16 @@ def attack_main_advadx(model_name=None):
                     probs = F.softmax(logits, dim=-1)
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(probs_selected + zero_nums)
-                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
+                    log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
+                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m,retain_graph=True)[0]
+                    grad_xt = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
+                    # test = (grad_xj * 1 / alpha_bar.sqrt())-grad_xt
+                    test = grad_xt / grad_xj
+
+                    # if th.all(test == 0):
+                    #     print("test is all zeros.")
+                    # else:
+                    #     print("test has non-zero elements.")
                 else:
                     assert False
                 # 随机选择一个模型的梯度
@@ -223,8 +232,8 @@ def attack_main_advadx(model_name=None):
 
         return prev_grad, choice
 
-    images_root = "./dataset1/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
+    images_root = "./dataset/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
 
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
@@ -268,7 +277,7 @@ def attack_main_advadx(model_name=None):
     all_BP_iter_count = 0
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
@@ -352,7 +361,7 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 20)
+                    pixel_threshold = np.percentile(block, 5)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 
@@ -450,7 +459,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=50,
+        batch_size=1,
         budget_Xi=8,  # 0-255, PC
         attack_method="AdvAD-X",
         attack_type="untarget",

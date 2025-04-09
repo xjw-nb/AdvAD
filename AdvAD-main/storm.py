@@ -62,8 +62,9 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
-
 x_list = []
+ut = 0.1
+prev = []
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -126,7 +127,9 @@ def attack_main_advadx(model_name=None):
         assert attack_type is not None
         global prev_grad
         global x_list
-        ut = 1.0
+        global ut
+        global prev
+        # ut = 1.0
         grad1 = th.zeros_like(x0_ori, device=x0_ori.device)
         # momentum_factor = 0.2
         timestep_map = attack_diffusion.timestep_map
@@ -138,12 +141,17 @@ def attack_main_advadx(model_name=None):
             new_ts = new_ts.float() * (1000.0 / original_num_steps)
 
         with th.enable_grad():
-
             xt = x.detach().clone().requires_grad_(True)
-            x_list.append(xt)
+            # 在 x_list 中添加当前样本 xt
+            # x_list.append(xt)
+            x_list.append({
+                'xt': xt.detach().clone(),
+                't': t.detach().clone(),
+                'y': y.detach().clone(),
+                'eps': eps.detach().clone()
+            })
             if len(x_list) > 3:
-               x_list = x_list[-3:]  # 只删除最旧的元素，保证最多存 3 个
-            print("1111",len(x_list))
+                x_list = x_list[-3:]  # 保证最多保存 3 个样本
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)  # 基于xt估计x0
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -163,9 +171,6 @@ def attack_main_advadx(model_name=None):
             pred_xstart = pred_xstart[:, :, :].sub(mean).div(std)
             pred_xstart = pred_xstart.permute(0, 3, 1, 2)
             x_start = pred_xstart.clone().requires_grad_(True) #detacth
-            # x_list.append(x_start)
-            # if len(x_list) > 3:  # 限制存储的 x_list 长度
-            #     x_list.pop(0)
             logits = attacked_model(pred_xstart)  # 计算估计的x0的logits
             choice = th.argmax(logits, 1).detach() == y  # 寻找logits最大的索引对应的类别，再与原标签进行比较获得布尔张量choice
             grad_zeros = th.zeros_like(x)  # 创建一个全是0的张量
@@ -174,6 +179,7 @@ def attack_main_advadx(model_name=None):
                 return grad_zeros, choice,ut
             t1 = t.clone()
             if t1[0].item() == 999:
+                # xt1 = xt.clone().requires_grad_(True)
                 # 随机从 attacked_models_list 中选择一个模型
                 model = random.choice(attacked_models_list)  # 随机选择一个模型
                 logits = model(x_start)  # 当前模型的 logits
@@ -189,14 +195,11 @@ def attack_main_advadx(model_name=None):
                     grad1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
-                d1=grad1.clone()
+                # d1=grad1.clone()
 
             if t1[0].item() != 999:
-                # grad_t = []
-                a_values = []
-                # grad_bo = []
+                # a_values = []
                 model1 = random.choice(attacked_models_list)
-                # selected_model = model1
                 logits = model1(x_start)  # 当前模型的 logits
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits, dim=-1)
@@ -210,27 +213,52 @@ def attack_main_advadx(model_name=None):
                     grad_t1 = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
                 else:
                     assert False
-                # grad_t.append(grad_t1)
-                # print("111",len(grad_t))
-
 
                 a_next = 1.0 / (((1 + th.norm(grad1) ** 2 + th.norm(grad_t1) ** 2 )) ** (2 / 3))
-                # a_values.append(a_next)  # a_values[t-1] 对应 a_{t+1}
-                # ut = 1.0 / (((th.norm(grad1) ** 2 + sum(th.norm(g1) ** 2 for g1 in prev)) / a_next) ** (1 / 3))
-                ut = 1.0 / (((th.norm(grad1) ** 2)  / a_next) + sum(th.norm(g1) ** 2 / a_next for g1 in prev) ** (1 / 3))
+                ut = 1.0 / ((((th.norm(grad1) ** 2)  / a_next) + th.norm(prev_grad) ** 2 / a_next) ** (1 / 3))
 
+                xt_prev = x_list[-2]['xt']
+                xt_prev.requires_grad_(True)
 
-                logits1 = model1(x_start)
+                pred_xstart_prev = attack_diffusion._predict_xstart_from_eps(
+                    xt_prev, x_list[-2]['t'], x_list[-2]['eps']
+                )
+                pred_xstart_prev = (pred_xstart_prev / 2 + 0.5).clamp(0, 1)
+                pred_xstart_prev = pred_xstart_prev.permute(0, 2, 3, 1)
+                if "adv" in args.model_name:
+                    # preprocess_np = (np.array([0.5, 0.5, 0.5]), np.array([0.5, 0.5, 0.5]))
+                    mean = th.as_tensor([0.5, 0.5, 0.5], dtype=pred_xstart.dtype, device=pred_xstart.device)
+                    std = th.as_tensor([0.5, 0.5, 0.5], dtype=pred_xstart.dtype, device=pred_xstart.device)
+                elif "Singh" in args.model_name:
+                    # preprocess_np = (np.array([0, 0, 0]), np.array([1, 1, 1]))
+                    mean = th.as_tensor([0, 0, 0], dtype=pred_xstart.dtype, device=pred_xstart.device)
+                    std = th.as_tensor([1, 1, 1], dtype=pred_xstart.dtype, device=pred_xstart.device)
+                else:
+                    mean = th.as_tensor([0.485, 0.456, 0.406], dtype=pred_xstart.dtype, device=pred_xstart.device)
+                    std = th.as_tensor([0.229, 0.224, 0.225], dtype=pred_xstart.dtype, device=pred_xstart.device)
+
+                pred_xstart_prev = pred_xstart_prev[:, :, :].sub(mean).div(std)
+                pred_xstart_prev = pred_xstart_prev.permute(0, 3, 1, 2)
+                # logits1 = model1(x_start)
+                logits_prev = model1(pred_xstart_prev)
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits1, dim=-1)
                     log_probs_selected = log_probs[range(len(logits1)), y.view(-1)]
                     grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
                 elif attack_type == "untarget":
-                    probs = F.softmax(logits1, dim=-1)
-                    probs_selected = probs[range(len(logits1)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_t2 = th.autograd.grad(log_one_minus_probs_selected.sum(), x_list[1], retain_graph=True)[0]
+                    # probs = F.softmax(logits1, dim=-1)
+                    # probs_selected = probs[range(len(logits1)), y.view(-1)]
+                    # zero_nums = (probs_selected == 1) * 1e-6
+                    # log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
+                    # grad_t2 = th.autograd.grad(log_one_minus_probs_selected.sum(), x_list[-2]['xt'], retain_graph=True)[0]
+
+                    probs_prev = F.softmax(logits_prev, dim=-1)
+                    probs_selected_prev = probs_prev[range(len(logits_prev)), x_list[-2]['y'].view(-1)]
+                    zero_nums = (probs_selected_prev == 1) * 1e-6
+                    log_one_minus_probs_selected_prev = th.log(1 - probs_selected_prev + zero_nums)
+                    grad_t2 = th.autograd.grad(
+                        log_one_minus_probs_selected_prev.sum(), xt_prev, retain_graph=True
+                    )[0]
                 else:
                     assert False
                 # grad_bo.append(grad_t2)
@@ -240,14 +268,15 @@ def attack_main_advadx(model_name=None):
             # prev = []
             if t1[0].item() == 999:
                prev_grad = grad1.detach().clone()  # 创建当前梯度的副本
+               prev.append(prev_grad)
             else:
                prev_grad = momentum_grad.detach().clone()
-               prev.append(prev_grad)
+               # prev.append(prev_grad)
 
         return prev_grad, choice, ut
 
-    images_root = "./dataset/images/"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
+    images_root = "./dataset1/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
 
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
@@ -291,12 +320,13 @@ def attack_main_advadx(model_name=None):
     all_BP_iter_count = 0
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
-        x_list = []
+        ut = 1
+        # x_list = []
         prev = []
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
@@ -348,7 +378,7 @@ def attack_main_advadx(model_name=None):
                 mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
 
                 # 计算块大小
-                block_size = 4
+                block_size = 16
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
                 # 存储每个块的特征重要性
@@ -363,7 +393,7 @@ def attack_main_advadx(model_name=None):
                         # block_importance[i, j] = np.sqrt(np.mean(np.square(block)))  # 均方根均值
 
                 # 计算前50%的块
-                threshold = np.percentile(block_importance, 30)
+                threshold = np.percentile(block_importance, 50)
                 important_blocks = np.where(block_importance >= threshold)
 
                 # 创建一个新掩码，初始化为零
@@ -375,7 +405,7 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 5)
+                    pixel_threshold = np.percentile(block, 50)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 
@@ -473,13 +503,13 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=5,
+        batch_size=50,
         budget_Xi=8,  # 0-255, PC
         attack_method="AdvAD-X",
         attack_type="untarget",
         image_size=224,
 
-        model_name="inception_v3",
+        model_name="resnet50",
         eval_model="mobile_v2",
         momentum_factor="0.1",
         model_name_list=["vgg19", "inception_v3", "resnet50"],

@@ -9,7 +9,7 @@ def eval_all(file_name=None, re_logger=True, quant=False, eval_model=None):
 if __name__ == "__main__":
     dir_list = [
         # "adv_examples_Res50_AdvAD"
-        # "attack20250320_065924"
+        "attack20250405_072733"
 
     ]
 
