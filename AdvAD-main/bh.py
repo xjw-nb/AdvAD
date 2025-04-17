@@ -63,7 +63,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-# prev_grad = None
+prev_grad = None
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -116,14 +116,14 @@ def attack_main_advadx(model_name=None):
 
     attacked_models_list = [
         attacked_models.model_selection("vgg19").eval(),  # 模型1
-        attacked_models.model_selection("mobile_v2").eval(),  # 模型2
-        attacked_models.model_selection("inception_v3").eval(),  # 模型3
+        attacked_models.model_selection("inception_v3").eval(),  # 模型2
+        attacked_models.model_selection("resnet50").eval(),  # 模型3
     ]
     attacked_model = attacked_models.model_selection(model_name).eval()
 
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
-        # global prev_grad
+        global prev_grad
         momentum_factor = 0.3
 
         timestep_map = attack_diffusion.timestep_map
@@ -161,6 +161,10 @@ def attack_main_advadx(model_name=None):
 
             if not choice.any():
                 return grad_zeros, choice
+            target_model_name = eval_model  # 被测模型名称
+            target_weight = 0.9
+            # grads = []
+            # model_names = [model.name for model in attacked_models_list]
             grads = []
             for model in attacked_models_list:  # 尝试每100次算一次梯度
                 logits = model(x_start)  # 当前模型的 logits
@@ -177,11 +181,23 @@ def attack_main_advadx(model_name=None):
                 else:
                     assert False
                 grads.append(grad)
+                # 判断是否进行加权
+            if target_model_name in attacked_models_list:
+                weights = []
+                for model in attacked_models_list:
+                    if model.name == target_model_name:
+                        weights.append(target_weight)
+                    else:
+                        weights.append((1 - target_weight) / (len(attacked_models_list) - 1))
+                final_grad = sum(w * g for w, g in zip(weights, grads))
+            else:
+                final_grad = sum(grads) / len(grads)
                 # 合并梯度 (例如取平均)
-            final_grad = sum(grads) / len(grads)
+
+
+            # final_grad = sum(grads) / len(grads)
             m_svrg = 1  # 改为3
             momentum = 1.0
-            # x_t1 = xt.detach().clone().requires_grad_(True)
             x_m = x_start.clone().requires_grad_(True)  # 外层循环估计的x_0
             G_m = th.zeros_like(xt, device=xt.device)
             # 迭代进行梯度更新
@@ -215,15 +231,14 @@ def attack_main_advadx(model_name=None):
                 x_m = x_j
                 # 更新 G_m
                 G_m = G_m1  # 记得更新 G_m，用于下一次迭代
-
             momentum_grad = momentum_factor * final_grad + (1 - momentum_factor) * G_m
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
 
         return prev_grad, choice
 
-    images_root = "/home/ubuntu/AdvAD/AdvAD-main/dataset1/images"  # The clean images' root directory.
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('/home/ubuntu/AdvAD/AdvAD-main/dataset1/images.csv')
+    images_root = "./dataset1/images/"  # The clean images' root directory.
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
 
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
@@ -267,7 +282,7 @@ def attack_main_advadx(model_name=None):
     all_BP_iter_count = 0
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="/home/ubuntu/AdvAD/AdvAD-main/dataset1", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
@@ -455,9 +470,9 @@ def create_attack_argparser():
         attack_type="untarget",
         image_size=224,
 
-        model_name="mobile_v2",
+        model_name="resnet50",
         eval_model="resnet50",
-        model_name_list=["vgg19", "mobile_v2", "inception_v3"]
+        model_name_list=["vgg19", "inception_v3", "resnet50"]
         # model_name="inception_v3",
         # model_name="swin",
         # model_name="mobile_v2",

@@ -21,7 +21,18 @@ from natsort import index_natsorted
 from torch.utils.data import DataLoader
 from torchcam.methods import GradCAM
 from torchvision import transforms
-
+from torch_nets import (
+    tf_inception_v3,
+    tf_inception_v4,
+    tf_resnet_v2_50,
+    tf_resnet_v2_101,
+    tf_resnet_v2_152,
+    tf_inc_res_v2,
+    tf_adv_inception_v3,
+    tf_ens3_adv_inc_v3,
+    tf_ens4_adv_inc_v3,
+    tf_ens_adv_inc_res_v2,
+    )
 from ImageNet_Compatible_Dataset import ImageNet_Compatible
 from eval_all import eval_all
 from utils import logger
@@ -63,7 +74,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-# prev_grad = None
+prev_grad = None
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -115,16 +126,16 @@ def attack_main_advadx(model_name=None):
     model_name = args.model_name
 
     attacked_models_list = [
-        attacked_models.model_selection("vgg19").eval(),  # 模型1
-        attacked_models.model_selection("inception_v3").eval(),  # 模型2
-        attacked_models.model_selection("resnet50").eval(),  # 模型3
+        attacked_models.model_selection("mobilenetv3").eval(),  # 模型1
+        attacked_models.model_selection("vgg16").eval(),  # 模型2
+        attacked_models.model_selection("inception_resnet_v2").eval(),  # 模型3
     ]
     attacked_model = attacked_models.model_selection(model_name).eval()
 
     def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
         assert attack_type is not None
-        # global prev_grad
-        momentum_factor = 0.5
+        global prev_grad
+        momentum_factor = 0.3
 
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
@@ -164,12 +175,14 @@ def attack_main_advadx(model_name=None):
             grads = []
             for model in attacked_models_list:  # 尝试每100次算一次梯度
                 logits = model(x_start)  # 当前模型的 logits
+                # print(type(logits))
                 if attack_type == "target":
                     log_probs = F.log_softmax(logits, dim=-1)
                     log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
                     grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
                 elif attack_type == "untarget":
                     probs = F.softmax(logits, dim=-1)
+                    # probs = F.softmax(th.stack(logits, dim=0), dim=-1)
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
                     log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
@@ -181,8 +194,6 @@ def attack_main_advadx(model_name=None):
             final_grad = sum(grads) / len(grads)
             m_svrg = 1  # 改为3
             momentum = 1.0
-            # x_t1 = xt.detach().clone().requires_grad_(True)
-
             x_m = x_start.clone().requires_grad_(True)  # 外层循环估计的x_0
             G_m = th.zeros_like(xt, device=xt.device)
             # 迭代进行梯度更新
@@ -198,9 +209,10 @@ def attack_main_advadx(model_name=None):
                     grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m)[0]
                 elif attack_type == "untarget":
                     probs = F.softmax(logits, dim=-1)
+                    # probs = F.softmax(th.stack(logits, dim=0), dim=-1)
                     probs_selected = probs[range(len(logits)), y.view(-1)]
                     zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(probs_selected + zero_nums)
+                    log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
                     grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
                 else:
                     assert False
@@ -216,11 +228,13 @@ def attack_main_advadx(model_name=None):
                 x_m = x_j
                 # 更新 G_m
                 G_m = G_m1  # 记得更新 G_m，用于下一次迭代
-
             momentum_grad = momentum_factor * final_grad + (1 - momentum_factor) * G_m
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
-
+            # 计算当前 prev_grad 的方差
+            # grad_var = th.var(prev_grad).item()
+            # # 打印或保存
+            # print(f"[Step] Variance of prev_grad: {grad_var:.6f}")
         return prev_grad, choice
 
     images_root = "./dataset1/images/"  # The clean images' root directory.
@@ -324,7 +338,7 @@ def attack_main_advadx(model_name=None):
                 mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
 
                 # 计算块大小
-                block_size = 8
+                block_size = 16
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
                 # 存储每个块的特征重要性
@@ -352,7 +366,7 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 20)
+                    pixel_threshold = np.percentile(block, 10)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
 
@@ -458,7 +472,7 @@ def create_attack_argparser():
 
         model_name="resnet50",
         eval_model="mobile_v2",
-        model_name_list=["vgg19", "inception_v3", "resnet50"]
+        model_name_list=["vgg16", "mobilenetv3", "inception_resnet_v2"]
         # model_name="inception_v3",
         # model_name="swin",
         # model_name="mobile_v2",

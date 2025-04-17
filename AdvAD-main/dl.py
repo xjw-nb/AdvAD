@@ -8,9 +8,9 @@ import argparse
 import csv
 import os
 import random
-import torch.nn as nn
+
 import numpy as np
-from PIL import Image
+
 import torch as th
 import torch.nn.functional as F
 
@@ -18,10 +18,7 @@ import datetime
 import time
 from natsort import index_natsorted
 from torch.utils.data import DataLoader
-# 更改后
-# from tensorboardX import SummaryWriter
-# from torch.utils.tensorboard import SummaryWriter
-# from torch.utils.tensorboard import SummaryWriter
+from PIL import Image
 from ImageNet_Compatible_Dataset import ImageNet_Compatible
 from eval_all import eval_all
 from utils import logger
@@ -31,7 +28,7 @@ from utils.script_util import (
     add_dict_to_argparser,
     args_to_dict, create_diffusion
 )
-# from torchviz import make_dot
+
 
 ##load image metadata (Image_ID, true label, and target label)
 def load_ground_truth(csv_filename):
@@ -59,10 +56,9 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
-
-# prev_grad = None
-# grads = []
-def attack_main(model_name=None):
+#
+prev_grad = None
+def attack_main(momentum_factor,model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
 
@@ -73,6 +69,7 @@ def attack_main(model_name=None):
 
     if (args.model_name == "swin" or args.model_name == "convnext") and args.batch_size > 50:
         args.batch_size = 50
+
 
     if args.manual_seed is not None:
         print(args.manual_seed)
@@ -85,6 +82,8 @@ def attack_main(model_name=None):
         th.deterministic = True
         th.backends.cudnn.deterministic = True
         th.backends.cudnn.benchmark = False
+        # th.use_deterministic_algorithms(True)
+
 
     save_dir = 'attack_results/'
     today = datetime.date.today()
@@ -110,24 +109,14 @@ def attack_main(model_name=None):
         **args_to_dict(args, temp_dict.keys())
     )
 
-    model_name = args.model_name
     eval_model = args.eval_model
-    attacked_models_list = [
-        attacked_models.model_selection("vgg19").eval(),  # 模型1
-        attacked_models.model_selection("mobile_v2").eval(),  # 模型2
-        attacked_models.model_selection("resnet50").eval(),  # 模型3
-    ]
-    # attacked_model_list = [attacked_models.model_selection(name).eval() for name in model_name_list]
+
     attacked_model = attacked_models.model_selection(model_name).eval()
-    # 初始化 TensorBoard 记录器
-    # writer = SummaryWriter("logs/AMG_grad_func")
 
     def AMG_grad_func(x, t, y, eps, attack_type=None):
-
-        # global prev_grad
-        # global grads
-        momentum_factor = 0.3
         assert attack_type is not None
+        global prev_grad
+        # momentum_factor = 0.3
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
         original_num_steps = attack_diffusion.original_num_steps
@@ -147,85 +136,47 @@ def attack_main(model_name=None):
 
             pred_xstart = pred_xstart[:, :, :].sub(mean).div(std)
             pred_xstart = pred_xstart.permute(0, 3, 1, 2)
-            x_start = pred_xstart.clone().requires_grad_(True)
-            grads = []
-            for model in attacked_models_list:
-                logits = model(x_start)  # 当前模型的 logits
-                if attack_type == "target":
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-                elif attack_type == "untarget":
-                    probs = F.softmax(logits, dim=-1)
-                    probs_selected = probs[range(len(logits)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
-                else:
-                    assert False
-                grads.append(grad)
-            final_grad = sum(grads) / len(grads)
-            m_svrg = 1
-            momentum = 1.0
-            x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
-            # print("Gradient of x_m:", x_m.grad)
-            G_m = th.zeros_like(xt, device=xt.device)
-            # 迭代进行梯度更新
-            for j in range(m_svrg):
-                beta = 2./2550
-                # 使用同一模型来计算 x_m 的梯度
-                model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
-                model = attacked_models_list[model_index]
-                logits = model(x_m)  # 计算模型的 logits
 
-                if attack_type == "target":
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m, retain_graph=True)[0]
-                elif attack_type == "untarget":
-                    probs = F.softmax(logits, dim=-1)
-                    probs_selected = probs[range(len(logits)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
-                else:
-                    assert False
-                # 随机选择一个模型的梯度
-                grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+            logits = attacked_model(pred_xstart)
 
-                # 计算梯度差异
-                g_m = grad_xj - (grad_single - final_grad)
+            if attack_type == "target":
+                log_probs = F.log_softmax(logits, dim=-1)
+                log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+            elif attack_type == "untarget":
+                probs = F.softmax(logits, dim=-1)
+                probs_selected = probs[range(len(logits)), y.view(-1)]
+                zero_nums = (probs_selected == 1) * 1e-6
+                log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt)[0]
 
-                # 使用 momentum 更新梯度
-                G_m1 = momentum * G_m + g_m
-                x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
-                x_j = th.clamp(x_j, 0.0, 1.0)
-                x_m = x_j
-                # 更新 G_m
-                G_m = G_m1  # 记得更新 G_m，用于下一次迭代
-
-            momentum_grad = momentum_factor * final_grad + (1-momentum_factor)*G_m
+            else:
+                assert False
+            if prev_grad is not None:
+               momentum_grad = momentum_factor * prev_grad + (1 - momentum_factor) * grad
+            else:
             # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
+                momentum_grad = grad
             prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
-            # print("1111",prev_grad)
+
         return prev_grad
 
-    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
+    image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset1/images.csv')
     assert len(image_id_list) == len(label_ori_list) == len(label_tar_list)
 
     all_adv_images = []
 
     batchsize = args.batch_size
-    image_dataset = ImageNet_Compatible(root="dataset", image_size=args.image_size)
+    image_dataset = ImageNet_Compatible(root="dataset1", image_size=args.image_size)
     data_loader = DataLoader(image_dataset, batch_size=batchsize, shuffle=False, drop_last=False)
 
     start_time = time.time()
 
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
         prev_grad = None
-        grads = []
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
+        prev_grad = th.zeros_like(x0_ori, device=x0_ori.device)
         classes_ori = label_ori_all.to(device)
         classes_tar = label_tar_all.to(device)
 
@@ -264,6 +215,7 @@ def attack_main(model_name=None):
         """
         attack end
         """
+       # sample_output = results[-1]["proj_sample"][0]
         sample_output = results["proj_sample"]
         sample_output = (sample_output / 2. + 0.5).clamp(0, 1)
         adv_image = (sample_output * 255).clamp(0, 255)
@@ -301,7 +253,7 @@ def attack_main(model_name=None):
     img_num = len(all_adv_images)
     logger.log("****************** Evaluation start ******************")
     '''Eval normal quanted (8-bit image) results for AdvAD (quant=True)'''
-    eval_all(file_name=file_name, re_logger=False, quant=True, eval_model=eval_model)
+    eval_all(file_name=file_name, re_logger=False, quant=False,eval_model=eval_model)
     logger.log("****************** Evaluation complete ******************")
 
 def create_attack_argparser():
@@ -313,25 +265,17 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=1,
+        batch_size=50,
         budget_Xi=8,  # 0-255
         attack_method="AdvAD",
         attack_type="untarget",
         image_size=224,
-
-        model_name="resnet50",
-        eval_model="inception_v3",
-        model_name_list=["vgg19", "mobile_v2", "resnet50"]
-        # model_name="resnet50",
+        model_name="mobile_v2",
+        eval_model="resnet50",
+        momentum_factor = "0.1"
         # model_name="convnext",
         # model_name="swin",
         # model_name="vim-small"
-        # model_name="inception_v3",
-        # model_name="swin",
-        # model_name="mobile_v2",
-        # model_name="vgg19",
-        # model_name="wrn50",
-        # model_name="convnext",
     )
 
     parser = argparse.ArgumentParser()
@@ -341,7 +285,3 @@ def create_attack_argparser():
 
 if __name__ == "__main__":
     attack_main()
-
-
-
-

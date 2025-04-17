@@ -115,7 +115,7 @@ def attack_main_advadx(model_name=None):
     model_name = args.model_name
 
     attacked_models_list = [
-        attacked_models.model_selection("resnet50").eval(),  # 模型1
+        attacked_models.model_selection("vgg19").eval(),  # 模型1
         attacked_models.model_selection("mobile_v2").eval(),  # 模型2
         attacked_models.model_selection("inception_v3").eval(),  # 模型3
     ]
@@ -455,9 +455,9 @@ def create_attack_argparser():
         attack_type="untarget",
         image_size=224,
 
-        model_name="resnet50",
-        eval_model="vgg19",
-        model_name_list=["resnet50", "mobile_v2", "inception_v3"]
+        model_name="mobile_v2",
+        eval_model="resnet50",
+        model_name_list=["vgg19", "mobile_v2", "inception_v3"]
         # model_name="inception_v3",
         # model_name="swin",
         # model_name="mobile_v2",

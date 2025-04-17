@@ -62,8 +62,9 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
-
+call_count = 0
 prev_grad = None
+
 def attack_main_advadx(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -121,11 +122,12 @@ def attack_main_advadx(model_name=None):
     ]
     attacked_model = attacked_models.model_selection(model_name).eval()
 
-    def AMG_grad_func_DGI(x, t, y, eps, attack_type=None):
+    def AMG_grad_func_DGI(x, t,alpha_bar, y, eps, attack_type=None):
         assert attack_type is not None
         global prev_grad
-        # global model_idx
-        momentum_factor = 0.3
+        global call_count
+        momentum_factor = 0.5
+
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
         original_num_steps = attack_diffusion.original_num_steps
@@ -136,7 +138,6 @@ def attack_main_advadx(model_name=None):
 
         with th.enable_grad():
             xt = x.detach().clone().requires_grad_(True)
-
             pred_xstart = attack_diffusion._predict_xstart_from_eps(xt, t, eps)  # 基于xt估计x0
             pred_xstart = (pred_xstart / 2 + 0.5).clamp(0, 1)
             pred_xstart = pred_xstart.permute(0, 2, 3, 1)
@@ -162,79 +163,64 @@ def attack_main_advadx(model_name=None):
 
             if not choice.any():
                 return grad_zeros, choice
-
-            window_size = 3  # 滑动窗口大小
-            grad_sum = None  # 维护滑动窗口的梯度和
-            grads_queue = []  # 存储最近 window_size 轮的梯度
-            model_idx = 0  # 记录当前使用的模型索引
-            model = attacked_models_list[model_idx]  # 轮流选择模型
-            logits = model(x_start)  # 计算当前模型的 logits
-
-            if attack_type == "target":
-                log_probs = F.log_softmax(logits, dim=-1)
-                log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
-            elif attack_type == "untarget":
-                probs = F.softmax(logits, dim=-1)
-                probs_selected = probs[range(len(logits)), y.view(-1)]
-                zero_nums = (probs_selected == 1) * 1e-6
-                log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
-            else:
-                assert False
-
-            # 维护滑动窗口
-            if len(grads_queue) < window_size:
-                grads_queue.append(grad)  # 直接加入队列
-                grad_sum = grad if grad_sum is None else grad_sum + grad  # 累加梯度
-                # avg_grad = grad  # 还没满 window_size，用当前梯度
-            else:
-                grad_sum = grad_sum - grads_queue.pop(0) + grad  # 移除最旧梯度，加入最新梯度
-                avg_grad = grad_sum / window_size  # 计算滑动窗口平均梯度
-                grads_queue.append(avg_grad)
-            model_idx = (model_idx + 1) % len(attacked_models_list)  # 轮流选择下一个模型
-            final_grad = sum(grads_queue) / len(grads_queue)
-            m_svrg = 1  # 改为3
-            momentum = 1.0
-            x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
-            G_m = th.zeros_like(xt, device=xt.device)
-            # 迭代进行梯度更新
-            for j in range(m_svrg):
-                beta = 2. / 2550
-                # 使用同一模型来计算 x_m 的梯度
-                # model_idx = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
-                model = attacked_models_list[model_idx-1]
-                logits = model(x_m)  # 计算模型的 logits
-
-                if attack_type == "target":
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m, retain_graph=True)[0]
-                elif attack_type == "untarget":
-                    probs = F.softmax(logits, dim=-1)
-                    probs_selected = probs[range(len(logits)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
-                else:
-                    assert False
-                # 随机选择一个模型的梯度
-                grad_single = grads_queue[model_idx-1]  # 从梯度列表中选择与模型匹配的梯度
-
-                # 计算梯度差异
-                g_m = grad_xj - (grad_single - final_grad)
-
-                # 使用 momentum 更新梯度
-                G_m1 = momentum * G_m + g_m
-                x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
-                x_j = th.clamp(x_j, 0.0, 1.0)
-                x_m = x_j
-                # 更新 G_m
-                G_m = G_m1  # 记得更新 G_m，用于下一次迭代
-
-            momentum_grad = momentum_factor * final_grad + (1 - momentum_factor) * G_m
-            # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
-            prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
+            call_count += 1
+            if call_count % 50 == 1:  # 第1次、第101次、第201次...
+                grads = []
+                for model in attacked_models_list:  # 只使用前三个模型
+                    logits = model(x_start)
+                    if attack_type == "target":
+                        log_probs = F.log_softmax(logits, dim=-1)
+                        log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                        grad = th.autograd.grad(log_probs_selected.sum(), xt, retain_graph=True)[0]
+                    elif attack_type == "untarget":
+                        probs = F.softmax(logits, dim=-1)
+                        probs_selected = probs[range(len(logits)), y.view(-1)]
+                        zero_nums = (probs_selected == 1) * 1e-6
+                        log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
+                        grad = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
+                    else:
+                        assert False
+                    grads.append(grad)
+                # 合并梯度 (例如取平均)
+                final_grad = sum(grads) / len(grads)
+                m_svrg = 10  # 改为3
+                momentum = 1.0
+                x_m = x_start.clone().requires_grad_(True)  # 外层循环估计的x_0
+                G_m = th.zeros_like(xt, device=xt.device)
+                # 迭代进行梯度更新
+                for j in range(m_svrg):
+                    beta = 2. / 2550
+                    # 使用同一模型来计算 x_m 的梯度
+                    model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
+                    model = attacked_models_list[model_index]
+                    logits = model(x_m)  # 计算模型的 logits
+                    if attack_type == "target":
+                        log_probs = F.log_softmax(logits, dim=-1)
+                        log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
+                        grad_xj = th.autograd.grad(log_probs_selected.sum(), xt)[0]
+                    elif attack_type == "untarget":
+                        probs = F.softmax(logits, dim=-1)
+                        probs_selected = probs[range(len(logits)), y.view(-1)]
+                        zero_nums = (probs_selected == 1) * 1e-6
+                        log_one_minus_probs_selected = th.log(1-probs_selected + zero_nums)
+                        grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), xt, retain_graph=True)[0]
+                    else:
+                        assert False
+                    # 随机选择一个模型的梯度
+                    grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
+                    # 计算梯度差异
+                    g_m = grad_xj - (grad_single - final_grad)
+                    # print("1111",grad_single-grad_xj)
+                    # 使用 momentum 更新梯度
+                    G_m1 = momentum * G_m + g_m
+                    x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
+                    x_j = th.clamp(x_j, 0.0, 1.0)
+                    x_m = x_j
+                    # 更新 G_m
+                    G_m = G_m1  # 记得更新 G_m，用于下一次迭代
+                momentum_grad = momentum_factor * final_grad + (1 - momentum_factor) * G_m
+                # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
+                prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
 
         return prev_grad, choice
 
@@ -288,8 +274,11 @@ def attack_main_advadx(model_name=None):
 
     start_time = time.time()
     for batch_i, (inputs_all, label_ori_all, label_tar_all) in enumerate(data_loader):
+        grads = []
+        prev_grad = None
         print("samples: {} / {}".format((batch_i + 1) * batchsize, len(image_dataset)))
         x0_ori = inputs_all.to(device)
+        prev_grad = th.zeros_like(x0_ori, device=x0_ori.device)
         label_ori_all = label_ori_all.to(device)
         label_tar_all = label_tar_all.to(device)
 
@@ -330,12 +319,12 @@ def attack_main_advadx(model_name=None):
                     mask_now1 = cam_extractor(label_ori_all[i].item(), scores)[0][0]
                 else:
                     assert False
-
-
                 mask_now1 = mask_now1.detach().cpu().numpy()
-                mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
-
+                mask_now1 = Image.fromarray(mask_now1)
+                # mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
+                mask_now1 = mask_now1.resize((args.image_size, args.image_size), resample=Image.BICUBIC)
                 # 计算块大小
+                mask_now1 = np.array(mask_now1).astype(np.float32) / 255.0
                 block_size = 8
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
@@ -352,7 +341,7 @@ def attack_main_advadx(model_name=None):
                         block_importance[i, j] = np.linalg.norm(block, ord=2)  # l2范数
 
                 # 计算前50%的块
-                threshold = np.percentile(block_importance, 50)
+                threshold = np.percentile(block_importance, 10)
                 important_blocks = np.where(block_importance >= threshold)
 
                 # 创建一个新掩码，初始化为零
@@ -364,10 +353,11 @@ def attack_main_advadx(model_name=None):
                             block_j * block_size:(block_j + 1) * block_size]
 
                     # 在块内选出前20%的像素
-                    pixel_threshold = np.percentile(block, 5)
+                    pixel_threshold = np.percentile(block, 90)
                     new_mask[block_i * block_size:(block_i + 1) * block_size,
                     block_j * block_size:(block_j + 1) * block_size] = np.where(block >= pixel_threshold, block, 0)
-
+                new_mask = Image.fromarray(new_mask)
+                new_mask = new_mask.resize((args.image_size, args.image_size), resample=Image.BICUBIC)
                 mask_new.append(new_mask)
             else:
                 targets = [ClassifierOutputTarget(label_ori_all[i].item())]

@@ -60,8 +60,8 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-# prev_grad = None
-# grads = []
+prev_grad = None
+grads = []
 def attack_main(model_name=None):
     device = th.device("cuda")
     args = create_attack_argparser().parse_args()
@@ -123,10 +123,9 @@ def attack_main(model_name=None):
     # writer = SummaryWriter("logs/AMG_grad_func")
 
     def AMG_grad_func(x, t, y, eps, attack_type=None):
-
-        # global prev_grad
-        # global grads
-        momentum_factor = 0.3
+        global prev_grad
+        global grads
+        # momentum_factor = 0.5
         assert attack_type is not None
         timestep_map = attack_diffusion.timestep_map
         rescale_timesteps = attack_diffusion.rescale_timesteps
@@ -165,49 +164,11 @@ def attack_main(model_name=None):
                     assert False
                 grads.append(grad)
             final_grad = sum(grads) / len(grads)
-            m_svrg = 1
-            momentum = 1.0
-            x_m = x_start.detach().clone().requires_grad_(True)  # 外层循环估计的x_0
-            # print("Gradient of x_m:", x_m.grad)
-            G_m = th.zeros_like(xt, device=xt.device)
-            # 迭代进行梯度更新
-            for j in range(m_svrg):
-                beta = 2./2550
-                # 使用同一模型来计算 x_m 的梯度
-                model_index = th.randint(len(attacked_models_list), (1,)).item()  # 随机选择一个模型索引
-                model = attacked_models_list[model_index]
-                logits = model(x_m)  # 计算模型的 logits
-
-                if attack_type == "target":
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits)), y.view(-1)]
-                    grad_xj = th.autograd.grad(log_probs_selected.sum(), x_m, retain_graph=True)[0]
-                elif attack_type == "untarget":
-                    probs = F.softmax(logits, dim=-1)
-                    probs_selected = probs[range(len(logits)), y.view(-1)]
-                    zero_nums = (probs_selected == 1) * 1e-6
-                    log_one_minus_probs_selected = th.log(1 - probs_selected + zero_nums)
-                    grad_xj = th.autograd.grad(log_one_minus_probs_selected.sum(), x_m)[0]
-                else:
-                    assert False
-                # 随机选择一个模型的梯度
-                grad_single = grads[model_index]  # 从梯度列表中选择与模型匹配的梯度
-
-                # 计算梯度差异
-                g_m = grad_xj - (grad_single - final_grad)
-
-                # 使用 momentum 更新梯度
-                G_m1 = momentum * G_m + g_m
-                x_j = x_m + beta * th.sign(G_m1)  # 通过符号函数更新 x_j
-                x_j = th.clamp(x_j, 0.0, 1.0)
-                x_m = x_j
-                # 更新 G_m
-                G_m = G_m1  # 记得更新 G_m，用于下一次迭代
-
-            momentum_grad = momentum_factor * final_grad + (1-momentum_factor)*G_m
-            # # 更新 prev_grad 为当前梯度的副本，供下次迭代使用
-            prev_grad = momentum_grad.detach().clone()  # 创建当前梯度的副本
-            # print("1111",prev_grad)
+            prev_grad = final_grad.detach().clone()  # 创建当前梯度的副本
+            # grad_var = th.var(prev_grad).item()
+            #
+            # # 打印或保存
+            # print(f"[Step] Variance of prev_grad: {grad_var:.6f}")
         return prev_grad
 
     image_id_list, label_ori_list, label_tar_list = load_ground_truth('dataset/images.csv')
@@ -313,7 +274,7 @@ def create_attack_argparser():
         manual_seed=123,
         eta=0,
 
-        batch_size=1,
+        batch_size=5,
         budget_Xi=8,  # 0-255
         attack_method="AdvAD",
         attack_type="untarget",

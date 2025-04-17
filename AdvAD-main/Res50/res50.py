@@ -12,7 +12,6 @@ res50_dir = project_root / "Res50"
 # 当前 Python 解释器路径（确保是虚拟环境里的）
 python_exec = sys.executable
 
-# 要运行的脚本列表（都在 Inv3 下）
 scripts = [
     "b45.py",
     "b410.py",

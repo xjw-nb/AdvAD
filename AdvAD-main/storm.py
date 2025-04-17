@@ -242,8 +242,8 @@ def attack_main_advadx(model_name=None):
                 # logits1 = model1(x_start)
                 logits_prev = model1(pred_xstart_prev)
                 if attack_type == "target":
-                    log_probs = F.log_softmax(logits1, dim=-1)
-                    log_probs_selected = log_probs[range(len(logits1)), y.view(-1)]
+                    log_probs = F.log_softmax(logits_prev, dim=-1)
+                    log_probs_selected = log_probs[range(len(logits_prev)), y.view(-1)]
                     grad = th.autograd.grad(log_probs_selected.sum(), xt)[0]
                 elif attack_type == "untarget":
                     # probs = F.softmax(logits1, dim=-1)
@@ -378,7 +378,7 @@ def attack_main_advadx(model_name=None):
                 mask_now1 = cv2.resize(mask_now1, (args.image_size, args.image_size), interpolation=cv2.INTER_CUBIC)
 
                 # 计算块大小
-                block_size = 16
+                block_size = 4
                 num_blocks = (mask_now1.shape[0] // block_size, mask_now1.shape[1] // block_size)
 
                 # 存储每个块的特征重要性

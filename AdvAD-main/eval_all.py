@@ -9,7 +9,8 @@ def eval_all(file_name=None, re_logger=True, quant=False, eval_model=None):
 if __name__ == "__main__":
     dir_list = [
         # "adv_examples_Res50_AdvAD"
-        "attack20250405_072733"
+        "attack20250416_145635"
+
 
     ]
 
@@ -17,10 +18,10 @@ if __name__ == "__main__":
         print("*********************** Eval All {} ***********************".format(dir))
 
         '''Eval normal quanted (8-bit image) results for AdvAD (quant=True)'''
-        eval_all(file_name=dir, re_logger=True, quant=True, eval_model="mobile_v2")
+        # eval_all(file_name=dir, re_logger=True, quant=True, eval_model="inception_v3")
 
         '''Eval raw floating-point data w/o quant for AdvAD-X (quant=False)'''
-        # eval_all(file_name=dir, re_logger=True, quant=False, model_name="resnet50")
+        eval_all(file_name=dir, re_logger=True, quant=False, eval_model="mobile_v2")
 
         print("************************ Done ************************")
 

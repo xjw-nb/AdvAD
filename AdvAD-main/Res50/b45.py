@@ -117,7 +117,7 @@ def attack_main_advadx(model_name=None):
     attacked_models_list = [
         attacked_models.model_selection("vgg19").eval(),  # 模型1
         attacked_models.model_selection("mobile_v2").eval(),  # 模型2
-        attacked_models.model_selection("mobile_v2").eval(),  # 模型3
+        attacked_models.model_selection("inception_v3").eval(),  # 模型3
     ]
     attacked_model = attacked_models.model_selection(model_name).eval()
 

@@ -225,6 +225,7 @@ def attack_main(model_name=None):
     logger.log("****************** Evaluation start ******************")
     '''Eval normal quanted (8-bit image) results for AdvAD (quant=True)'''
     eval_all(file_name=file_name, re_logger=False, quant=True, model_name=model_name)
+    # eval_all(file_name=file_name, re_logger=False, quant=False, eval_model=eval_model)
     logger.log("****************** Evaluation complete ******************")
 
 def create_attack_argparser():
@@ -235,14 +236,12 @@ def create_attack_argparser():
         use_ddim=True,
         manual_seed=123,
         eta=0,
-
-        batch_size=50,
+        batch_size=5,
         budget_Xi=8,  # 0-255
         attack_method="AdvAD",
         attack_type="untarget",
         image_size=224,
-
-        model_name="resnet50",
+        model_name="inception_resnet_v2",
         # model_name="convnext",
         # model_name="swin",
         # model_name="vim-small"
